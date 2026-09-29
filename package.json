@@ -1,0 +1,11 @@
+{
+  "name": "ai-stock-dashboard-service",
+  "private": true,
+  "description": "Observable quote cache service acceptance tests",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

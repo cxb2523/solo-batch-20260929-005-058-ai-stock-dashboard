@@ -1,0 +1,10 @@
+[upstream]
+provider = "yfinance"
+request_timeout = 8
+
+[cache]
+ttl_seconds = 60
+dir = "cache"
+
+[prefetch]
+lock_timeout = 15

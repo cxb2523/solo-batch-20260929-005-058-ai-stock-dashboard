@@ -1,0 +1,13 @@
+# Runtime quote cache (schema-versioned JSON entries)
+/cache/
+/cache_demo/
+
+# Test/scratch artifacts
+cache_test_*/
+/test-results/
+/playwright-report/
+/blob-report/
+/node_modules/
+__pycache__/
+*.pyc
+

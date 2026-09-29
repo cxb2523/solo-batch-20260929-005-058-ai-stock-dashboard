@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>行情缓存与预取状态</title>
+  <style>
+    :root {
+      --bg: #0f1420;
+      --panel: #181f2e;
+      --line: #2a3550;
+      --text: #e6ecf5;
+      --muted: #93a1b8;
+      --accent: #4c8dff;
+      --green: #2ea043;
+      --yellow-bg: #3d3417;
+      --yellow-line: #d9a82b;
+      --yellow-text: #ffd866;
+      --red: #e5534b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+    }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin-bottom: 20px;
+    }
+    .panel h2 { font-size: 15px; margin: 0 0 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td {
+      text-align: left;
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+    th { color: var(--muted); font-weight: 600; }
+    tr.defaulted { background: var(--yellow-bg); }
+    tr.row-expired td { color: #c9b458; }
+    tr.row-schema-mismatch td { color: var(--red); }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .badge {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .3px;
+    }
+    .badge-env    { background: #14305c; color: #7db2ff; border: 1px solid #2f5da8; }
+    .badge-toml   { background: #143d2a; color: #5fd08a; border: 1px solid #2b7a4b; }
+    .badge-default{
+      background: var(--yellow-bg);
+      color: var(--yellow-text);
+      border: 1px solid var(--yellow-line);
+    }
+    .state-fresh   { color: var(--green); font-weight: 700; }
+    .state-expired { color: var(--yellow-text); font-weight: 700; }
+    .state-missing { color: var(--muted); }
+    .state-stale, .state-schema-mismatch { color: var(--red); font-weight: 700; }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    button {
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: white;
+      border-radius: 8px;
+      padding: 9px 16px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.secondary { background: transparent; color: var(--accent); }
+    button:disabled { opacity: .55; cursor: wait; }
+    #result {
+      margin-left: auto;
+      font-size: 12px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: pre-wrap;
+      text-align: right;
+    }
+    code { color: var(--yellow-text); }
+    .legend { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>行情缓存与预取调度 · 可观测状态</h1>
+  <div class="sub">
+    provider: <code>{{ provider }}</code>
+    缓存 schema v{{ payload.cache.schema_version }} ·
+    TTL {{ payload.cache.ttl_seconds }}s ·
+    配置文件 <code>{{ payload.config.path }}</code>
+  </div>
+
+  <div class="panel">
+    <div class="actions">
+      <button id="btn-prefetch" type="button">触发预取</button>
+      <button id="btn-refresh" class="secondary" type="button">强制刷新</button>
+      <span id="result"></span>
+    </div>
+    <div class="legend">
+      预取为增量：TTL 内条目跳过；强制刷新无视 TTL 直接穿透上游。
+      二者与查询接口共用同一缓存与单飞锁。
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>配置键生效值与来源</h2>
+    <table id="config-table">
+      <thead>
+        <tr>
+          <th>配置键</th><th>生效值</th><th>来源</th>
+          <th>期望类型</th><th>说明</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in payload.config.resolved_keys %}
+        <tr class="{% if item.defaulted %}defaulted{% endif %}"
+            data-source="{{ item.source }}" data-key="{{ item.key }}">
+          <td><code>{{ item.key }}</code></td>
+          <td data-role="value">{{ item.value }}</td>
+          <td>
+            <span class="badge badge-{{ item.source }}" data-role="source-badge">
+              {% if item.source == "env" %}ENV{% elif item.source == "toml" %}TOML{% else %}DEFAULT ⚠{% endif %}
+            </span>
+          </td>
+          <td>{{ item.expected }}</td>
+          <td>{{ item.description }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="legend">
+      黄色行 = 环境变量与 config.toml 均未提供，已降级到内置默认值（启动日志中留有 warning）。
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>缓存条目计数</h2>
+    <table id="cache-table">
+      <thead>
+        <tr>
+          <th>Key</th><th>状态</th><th class="num">价格</th>
+          <th class="num">命中</th><th class="num">过期</th>
+          <th class="num">Schema 不符</th><th class="num">上游刷新</th>
+          <th class="num">刷新失败</th><th class="num">锁等待</th>
+          <th class="num">单飞合并</th><th class="num">陈旧兜底</th>
+          <th class="num">强制刷新</th><th>最近刷新</th>
+          <th>最近来源</th><th>最近错误</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in payload.cache.entries %}
+        <tr data-symbol="{{ row.symbol }}"
+            class="row-{{ row.state }}">
+          <td><code>{{ row.symbol }}</code></td>
+          <td><span class="state-{{ row.state }}" data-role="state">{{ row.state }}</span></td>
+          <td class="num" data-role="price">{{ row.price if row.price is not none else "—" }}</td>
+          <td class="num" data-role="hits">{{ row.hits }}</td>
+          <td class="num" data-role="expired">{{ row.expired }}</td>
+          <td class="num" data-role="schema-mismatch">{{ row.schema_mismatch }}</td>
+          <td class="num" data-role="refreshes">{{ row.refreshes }}</td>
+          <td class="num" data-role="refresh-failures">{{ row.refresh_failures }}</td>
+          <td class="num" data-role="lock-waits">{{ row.lock_waits }}</td>
+          <td class="num" data-role="singleflight">{{ row.singleflight_merged }}</td>
+          <td class="num" data-role="stale">{{ row.stale_served }}</td>
+          <td class="num" data-role="force-refreshes">{{ row.force_refreshes }}</td>
+          <td data-role="last-refresh">{{ fmt_time(row.last_refresh) }}</td>
+          <td data-role="last-source">{{ row.last_source or "—" }}</td>
+          <td data-role="last-error">{{ row.last_error or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not payload.cache.entries %}
+    <div class="legend">尚无缓存条目，点击「触发预取」预热观察列表。</div>
+    {% endif %}
+  </div>
+
+  <script>
+    const result = document.getElementById("result");
+
+    async function callAction(url, label, event) {
+      const button = event.currentTarget;
+      result.textContent = label + " 进行中…";
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          result.textContent = label + " 失败: " + (data.message || resp.status);
+          return;
+        }
+        result.textContent =
+          `${label}: 更新 ${data.updated} · 跳过 ${data.skipped} · 陈旧 ${data.stale} · 失败 ${data.failed}`;
+        setTimeout(() => window.location.reload(), 500);
+      } catch (err) {
+        result.textContent = label + " 异常: " + err;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    document.getElementById("btn-prefetch").addEventListener("click", function (event) { callAction("/prefetch", "预取", event); });
+    document.getElementById("btn-refresh").addEventListener("click", function (event) { callAction("/refresh", "强制刷新", event); });
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+

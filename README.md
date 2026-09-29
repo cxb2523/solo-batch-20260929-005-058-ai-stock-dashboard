@@ -219,3 +219,71 @@ For questions or issues:
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://linkedin.com/in/erikthiart)
 
 </div>
+
+---
+
+## 🛰️ Observable Quote Cache Service (`/status`)
+
+Alongside the Streamlit app, a FastAPI service converges configuration parsing,
+the on-disk quote cache and prefetch scheduling into one observable surface.
+
+### Run
+
+```bash
+uvicorn service.main:app --port 8000
+# open http://127.0.0.1:8000/status
+```
+
+### Configuration precedence
+
+Resolution order is **environment variable (`STOCK_*`) > `config.toml` > built-in default**.
+Missing keys fall back to defaults, are highlighted yellow on `/status` and emit a
+startup warning log. Invalid values fail startup immediately, naming the key and the
+expected type, e.g.:
+
+```
+configuration error: invalid configuration for cache.ttl_seconds: expected positive number (seconds), got 'banana'
+```
+
+| Key | Env var | Type |
+|-----|---------|------|
+| `upstream.provider` | `STOCK_UPSTREAM_PROVIDER` | `yfinance` or `fake` |
+| `upstream.request_timeout` | `STOCK_UPSTREAM_REQUEST_TIMEOUT` | positive seconds |
+| `cache.ttl_seconds` | `STOCK_CACHE_TTL_SECONDS` | positive seconds |
+| `cache.dir` | `STOCK_CACHE_DIR` | directory path |
+| `watchlist` | `STOCK_WATCHLIST` | comma-separated symbols |
+| `prefetch.lock_timeout` | `STOCK_PREFETCH_LOCK_TIMEOUT` | non-negative seconds |
+
+### Guarantees
+
+- **TTL hit**: reads inside TTL return the cached entry and bump the hit counter.
+- **Explicit refresh still penetrates**: `GET /api/quotes/{symbol}?refresh=true`
+  and the page's **强制刷新** button bypass TTL and always hit upstream.
+- **Singleflight**: concurrent fetches for the same key share one upstream pull;
+  merged waits are counted as `lock_waits` / `singleflight_merged`.
+- **Atomic persistence**: entries are written via temp file + `os.replace` and
+  carry a `schema` version; mismatched schema is treated as expired and replaced.
+- **Failure never clobbers cache**: a failed upstream pull on an existing entry
+  serves the stale quote (`source: "stale"`) instead of overwriting it.
+- **Incremental prefetch**: `POST /prefetch` shares the same cache and locks as
+  queries; fresh entries are skipped (`skipped`), only missing/expired keys pull.
+
+### API
+
+- `GET /api/quotes/{symbol}[?refresh=true]` — read-through query
+- `POST /prefetch` — body `{"symbols": ["AAPL"]}` or `{}` for the watchlist
+- `POST /refresh` — same body, forces upstream pull for every symbol
+- `GET /api/status` — JSON backing the page (config sources + cache counters)
+- `GET /status` — table page with **触发预取** / **强制刷新** buttons
+
+For network-free/deterministic runs set `STOCK_UPSTREAM_PROVIDER=fake`
+(the `FLAKY` symbol always fails upstream to exercise stale-cache behavior).
+
+### Acceptance tests
+
+```bash
+npx playwright test tests/status.spec.ts
+```
+
+Covers prefetch-then-hit, force-refresh penetration, stale cache preserved on
+upstream failure, config source badges, and invalid config failing at startup.
