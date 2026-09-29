@@ -219,3 +219,59 @@ For questions or issues:
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://linkedin.com/in/erikthiart)
 
 </div>
+
+## 🔭 Observability Service (`/status`)
+
+A FastAPI companion service that consolidates config resolution, the quote
+cache, and prefetch scheduling into one observable page.
+
+### Run
+
+```bash
+pip install -r requirements-service.txt
+uvicorn service.main:app --port 8000
+```
+
+Open `http://127.0.0.1:8000/status`:
+
+- **配置表** — every config key with its effective value and source badge
+  (`env` > `config.toml` > `default`). Keys falling back to defaults are
+  highlighted yellow and logged at startup.
+- **缓存条目表** — per-key hits, expirations, last refresh, lock waits and
+  refresh failures.
+- **强制刷新** button — penetrates to the upstream even inside the TTL.
+- **触发预取** button — `POST /prefetch`, incremental: only missing/expired
+  symbols are fetched, sharing the same cache and singleflight locks as
+  queries.
+
+### Configuration
+
+Resolution order: environment variable (`STOCK_DASH_<KEY>`) → `config.toml`
+→ built-in default. Invalid values fail startup immediately, naming the key
+and the expected type.
+
+| key | type | default |
+| --- | --- | --- |
+| `cache_ttl_seconds` | float | `300.0` |
+| `cache_dir` | str | `.cache/quotes` |
+| `prefetch_symbols` | list[str] | `["AAPL", "MSFT", "GOOG"]` |
+| `upstream_timeout_seconds` | float | `5.0` |
+| `upstream` | str (`mock`/`yfinance`) | `mock` |
+| `log_level` | str | `INFO` |
+
+### Cache guarantees (`cache/store.py`)
+
+- Concurrent fetches for the same key are merged (singleflight).
+- Writes are atomic: temp file + `os.replace`.
+- Entries carry a schema version; mismatches are treated as expired.
+- A failed refresh never overwrites an existing entry (stale fallback).
+
+### Acceptance tests
+
+```bash
+npm install
+npx playwright test tests/status.spec.ts
+```
+
+Covers: prefetch-then-hit, forced-refresh penetration, and invalid config
+failing at startup.

@@ -1,0 +1,3 @@
+# Stock-dash configuration. Resolution order: env (STOCK_DASH_*) > this file > built-in defaults.
+cache_ttl_seconds = 300.0
+prefetch_symbols = ["AAPL", "MSFT", "GOOG"]

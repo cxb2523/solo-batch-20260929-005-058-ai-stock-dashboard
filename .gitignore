@@ -1,0 +1,8 @@
+node_modules/
+test-results/
+.cache/
+.cache-pw-*/
+.cache-test/
+__pycache__/
+*.pyc
+status-page.png
